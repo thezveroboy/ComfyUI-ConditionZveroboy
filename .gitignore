@@ -1,0 +1,8 @@
+# local / private — не пушить
+cond01.txt
+opencode.bat
+AGENTS.md
+GOALS.md
+conditions/
+__pycache__/
+*.pyc
