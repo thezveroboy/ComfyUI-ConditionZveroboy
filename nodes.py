@@ -1,8 +1,8 @@
 # nodes.py — ComfyUI-ConditionZveroboy
-# Универсальные ноды для CONDITIONING (любой DiT: Krea2, Qwen-Image, Minimax и т.д.)
-# Работают на уровне torch-тензоров (B, seq, dim), без знания конкретной модели.
-# Проверка совместимости: batch и dim должны совпадать, иначе ошибка
-# (так ловится попытка смешать Krea2 dim=30720 с Qwen другой dim).
+# Universal nodes for CONDITIONING (any DiT model: Krea2, Qwen-Image, Minimax, etc.)
+# They work at the level of torch tensors (B, seq, dim) without knowing the specific model.
+# Compatibility check: batch and dim must match, otherwise an error is raised
+# (this catches attempts to mix Krea2 dim=30720 with Qwen's different dim).
 
 import os
 import torch
@@ -16,7 +16,7 @@ except Exception:
     _HAS_FOLDER_PATHS = False
 
 
-# ---------- dynamic inputs helper (как в TextJoinZveroboy) ----------
+# ---------- dynamic inputs helper (same as in TextJoinZveroboy) ----------
 
 class ContainsAnyDict(dict):
     def __contains__(self, key):
@@ -32,11 +32,11 @@ EPS = 1e-8
 
 
 def _collect_conds(prefix, fixed_first, fixed_second, kwargs):
-    """Собрать cond_1, cond_2, ... cond_N из fixed + dynamic kwargs по номеру."""
+    """Collect cond_1, cond_2, ... cond_N from fixed inputs + dynamic kwargs, ordered by number."""
     vals = [fixed_first, fixed_second]
     dyn = {k: v for k, v in kwargs.items()
            if isinstance(k, str) and k.startswith(prefix)}
-    # cond_1/cond_2 уже есть в fixed, из kwargs их не дублируем
+    # cond_1/cond_2 are already in fixed, so do not duplicate them from kwargs
     def _num(k):
         try:
             return int(k.split("_", 1)[1])
@@ -47,51 +47,51 @@ def _collect_conds(prefix, fixed_first, fixed_second, kwargs):
         if n in (1, 2):
             continue
         vals.append(dyn[k])
-    # выкинуть неподключенные
+    # drop unconnected inputs
     return [v for v in vals if v is not None]
 
 
 def _single_tensor(cond):
-    """Из CONDITIONING достать единый тензор (B,L,D) + базовый dict.
-    Если записей несколько (после Combine) — склеиваем по seq.
+    """Extract a single tensor (B,L,D) + the base dict from CONDITIONING.
+    If there are several entries (after Combine), concatenate them along seq.
     """
     if cond is None or len(cond) == 0:
-        raise ValueError("пустой CONDITIONING: вход не подключен")
+        raise ValueError("empty CONDITIONING: input is not connected")
     tensors = []
     base_dict = {}
     for i, entry in enumerate(cond):
         t, d = entry[0], entry[1] if len(entry) > 1 else {}
         if not torch.is_tensor(t):
-            raise ValueError(f"запись {i}: не тензор")
+            raise ValueError(f"entry {i}: not a tensor")
         if t.dim() != 3:
-            raise ValueError(f"запись {i}: ожидался тензор (B,seq,dim), получен {tuple(t.shape)}")
+            raise ValueError(f"entry {i}: expected a (B,seq,dim) tensor, got {tuple(t.shape)}")
         tensors.append(t)
         if i == 0 and isinstance(d, dict):
             base_dict = dict(d)
     if len(tensors) == 1:
         return tensors[0], base_dict
-    # несколько записей: требуем одинаковые B и dim, клеим по seq
+    # several entries: require identical B and dim, concatenate along seq
     b0, d0 = tensors[0].shape[0], tensors[0].shape[2]
     for t in tensors[1:]:
         if t.shape[0] != b0 or t.shape[2] != d0:
             raise ValueError(
-                f"внутри одного CONDITIONING разные B/dim: {tuple(tensors[0].shape)} vs {tuple(t.shape)}"
+                f"different B/dim inside one CONDITIONING: {tuple(tensors[0].shape)} vs {tuple(t.shape)}"
             )
     return torch.cat(tensors, dim=1), base_dict
 
 
 def _align(tensors):
-    """Проверить B/dim, выровнять seq нулевым паддингом вправо. Возврат (B, Lmax, D)."""
+    """Check B/dim, align seq with right zero padding. Returns (B, Lmax, D)."""
     if len(tensors) < 1:
-        raise ValueError("нужен хотя бы один кондишен")
+        raise ValueError("at least one conditioning is required")
     b0 = tensors[0].shape[0]
     d0 = tensors[0].shape[2]
     for i, t in enumerate(tensors):
         if t.shape[0] != b0 or t.shape[2] != d0:
             raise ValueError(
-                f"несовместимые кондишены (разные модели?): вход {i+1} имеет {tuple(t.shape)}, "
-                f"а вход 1 — {tuple(tensors[0].shape)}. "
-                f"Смешивать можно только кондишены одной модели/энкодера."
+                f"incompatible conditionings (different models?): input {i+1} has {tuple(t.shape)}, "
+                f"while input 1 has {tuple(tensors[0].shape)}. "
+                f"Only conditionings from the same model/encoder can be mixed."
             )
     lmax = max(t.shape[1] for t in tensors)
     out = []
@@ -110,16 +110,16 @@ def _pack(tensor, base_dict):
 
 
 def _check_compat(tensors):
-    """Проверить одинаковые B и dim (универсальность: одна модель/энкодер). Seq может отличаться."""
+    """Check that B and dim match (universality: one model/encoder). Seq may differ."""
     if len(tensors) < 1:
-        raise ValueError("нужен хотя бы один кондишен")
+        raise ValueError("at least one conditioning is required")
     b0, d0 = tensors[0].shape[0], tensors[0].shape[2]
     for i, t in enumerate(tensors):
         if t.shape[0] != b0 or t.shape[2] != d0:
             raise ValueError(
-                f"несовместимые кондишены (разные модели?): вход {i+1} имеет {tuple(t.shape)}, "
-                f"а вход 1 — {tuple(tensors[0].shape)}. "
-                f"Смешивать можно только кондишены одной модели/энкодера."
+                f"incompatible conditionings (different models?): input {i+1} has {tuple(t.shape)}, "
+                f"while input 1 has {tuple(tensors[0].shape)}. "
+                f"Only conditionings from the same model/encoder can be mixed."
             )
     return b0, d0
 
@@ -129,9 +129,9 @@ def _norm_tokens(t):
 
 
 def _set_and_batch(anchor, others, threshold):
-    """anchor (La,D), others list of (Lk,D) — уже float.
-    Возврат (Lout,D): общие вектора — токены anchor, похожие на ВСЕ остальные,
-    усредненные со своими ближайшими соседями. Несовпавшие отбрасываются."""
+    """anchor (La,D), others is a list of (Lk,D) — already float.
+    Returns (Lout,D): shared vectors — anchor tokens that are similar to ALL the others,
+    averaged with their nearest neighbors. Non-matching ones are dropped."""
     a_n = _norm_tokens(anchor)
     scores = torch.ones(anchor.shape[0], dtype=torch.float32)
     nearest = []
@@ -143,7 +143,7 @@ def _set_and_batch(anchor, others, threshold):
         nearest.append(o[best_idx])  # (La, D)
     keep = scores >= threshold
     if int(keep.sum()) == 0:
-        # fallback: лучшая single пара, чтобы не вернуть пустой кондишен
+        # fallback: the best single pair, so we never return an empty conditioning
         i = int(scores.argmax())
         parts = [anchor[i:i+1]] + [n[i:i+1] for n in nearest]
         return torch.stack(parts, dim=0).mean(dim=0)
@@ -152,7 +152,7 @@ def _set_and_batch(anchor, others, threshold):
 
 
 def _pooled_max_sim(tokens, pools):
-    """max косинусная схожесть каждого токена tokens со всеми токенами из pools."""
+    """Max cosine similarity of each token in tokens against all tokens from pools."""
     t_n = _norm_tokens(tokens)
     best = torch.full((tokens.shape[0],), -1.0)
     for p in pools:
@@ -177,13 +177,13 @@ def set_op_and(tensors, threshold=0.7):
 
 
 def set_op_or(tensors):
-    """Объединение: конкатенация всех векторов (дедупликация не нужна — сэмплер сам взвесит)."""
+    """Union: concatenation of all vectors (no deduplication needed — the sampler will weight them)."""
     _check_compat(tensors)
     return torch.cat(tensors, dim=1)
 
 
 def set_op_xor(tensors, threshold=0.7):
-    """Симметрическая разность: вектора, НЕ похожие ни на что в остальных входах."""
+    """Symmetric difference: vectors that are NOT similar to anything in the other inputs."""
     _check_compat(tensors)
     b = tensors[0].shape[0]
     outs = []
@@ -194,7 +194,7 @@ def set_op_xor(tensors, threshold=0.7):
             score = _pooled_max_sim(t[bi], pools)
             keep = score < threshold
             if int(keep.sum()) == 0:
-                i = int(score.argmin())  # самый непохожий
+                i = int(score.argmin())  # the most dissimilar one
                 parts.append(t[bi][i:i+1])
             else:
                 parts.append(t[bi][keep])
@@ -205,7 +205,7 @@ def set_op_xor(tensors, threshold=0.7):
 
 
 def set_op_remove(tensors, threshold=0.7):
-    """A NOT B1 NOT B2 ...: вектора A, НЕ похожие ни на что в остальных (чистка фона/света)."""
+    """A NOT B1 NOT B2 ...: vectors of A that are NOT similar to anything in the others (background/light cleanup)."""
     _check_compat(tensors)
     b = tensors[0].shape[0]
     outs = []
@@ -240,7 +240,7 @@ def op_not(tensor):
     return -tensor
 
 
-# ---------- общие миксины ----------
+# ---------- shared mixins ----------
 
 def _multi_input_types():
     opt = ContainsAnyDict()
@@ -252,7 +252,7 @@ def _multi_input_types():
 def _collect_tensors(fixed1, fixed2, kwargs):
     from_nodes = _collect_conds(COND_PREFIX, fixed1, fixed2, kwargs)
     if len(from_nodes) < 2:
-        raise ValueError(f"подключите минимум 2 кондишена (сейчас {len(from_nodes)})")
+        raise ValueError(f"connect at least 2 conditionings (currently {len(from_nodes)})")
     tensors, first_dict = [], {}
     for c in from_nodes:
         t, d = _single_tensor(c)
@@ -281,7 +281,7 @@ def _threshold_input():
     }, "optional": opt}
 
 
-# ---------- ноды операций ----------
+# ---------- operation nodes ----------
 
 class CondAddZveroboy:
     @classmethod
@@ -310,8 +310,8 @@ class CondSubtractZveroboy:
 
 
 class CondAndZveroboy:
-    """AND: общие вектора — токены cond_1, похожие на ВСЕ остальные, усредненные
-    со своими ближайшими соседями. Несовпавшие отбрасываются."""
+    """AND: shared vectors — cond_1 tokens that are similar to ALL the others, averaged
+    with their nearest neighbors. Non-matching ones are dropped."""
     @classmethod
     def INPUT_TYPES(cls):
         return _threshold_input()
@@ -325,7 +325,7 @@ class CondAndZveroboy:
 
 
 class CondOrZveroboy:
-    """OR: объединение — конкатенация векторов всех входов."""
+    """OR: union — concatenation of the vectors of all inputs."""
     @classmethod
     def INPUT_TYPES(cls):
         return _multi_input_types()
@@ -340,7 +340,7 @@ class CondOrZveroboy:
 
 
 class CondXorZveroboy:
-    """XOR: только различающиеся вектора (непохожие ни на что в остальных)."""
+    """XOR: only the differing vectors (those unlike anything in the other inputs)."""
     @classmethod
     def INPUT_TYPES(cls):
         return _threshold_input()
@@ -413,8 +413,8 @@ class CondNotZveroboy:
 
 
 class CondRemoveZveroboy:
-    """A NOT B1 NOT B2 ... — оставить в первом только вектора, НЕ похожие
-    ни на что в остальных (чистка фона/света/локации)."""
+    """A NOT B1 NOT B2 ... — keep only the vectors in the first input that are NOT similar
+    to anything in the others (background/light/location cleanup)."""
     @classmethod
     def INPUT_TYPES(cls):
         return _threshold_input()
@@ -427,7 +427,7 @@ class CondRemoveZveroboy:
         return _run_set(cond_1, cond_2, kwargs, set_op_remove, threshold)
 
 
-# ---------- save / load (совместимо с Comfyui-Condition-Utils: torch.save .ckpt) ----------
+# ---------- save / load (compatible with Comfyui-Condition-Utils: torch.save .ckpt) ----------
 
 def _conditions_dir():
     if _HAS_FOLDER_PATHS:
@@ -477,7 +477,7 @@ class CondSaveZveroboy:
         for entry in conditioning:
             t = entry[0].detach().cpu().clone() if torch.is_tensor(entry[0]) else entry[0]
             d = dict(entry[1]) if len(entry) > 1 and isinstance(entry[1], dict) else {}
-            # тензоры внутри dict тоже на cpu для совместимости
+            # tensors inside the dict also go to cpu for compatibility
             for k, v in list(d.items()):
                 if torch.is_tensor(v):
                     d[k] = v.detach().cpu().clone()
@@ -514,21 +514,21 @@ class CondLoadZveroboy:
 
     def load(self, filename):
         if filename == "No files found":
-            raise FileNotFoundError("в папке conditions нет файлов")
+            raise FileNotFoundError("the conditions folder contains no files")
         save_dir = _conditions_dir()
         path = os.path.join(save_dir, os.path.basename(filename))
         if not os.path.exists(path):
-            # вдруг выбрано имя без расширения из folder_paths
+            # maybe a name without extension was picked from folder_paths
             for ext in (".ckpt", ".pt", ".cond"):
                 if os.path.exists(path + ext):
                     path = path + ext
                     break
         if not os.path.exists(path):
-            raise FileNotFoundError(f"файл не найден: {path}")
+            raise FileNotFoundError(f"file not found: {path}")
         if path.lower().endswith(".safetensors"):
             from safetensors.torch import load_file as _load_sf
             sd = _load_sf(path, device="cpu")
-            # ожидаем ключи cond / pooled_* от встроенного SaveConditioning — восстановим минимум
+            # expect cond / pooled_* keys from the built-in SaveConditioning — restore the minimum
             if "cond" in sd:
                 t = sd["cond"]
                 d = {}
@@ -536,17 +536,17 @@ class CondLoadZveroboy:
                     if k != "cond":
                         d[k] = v
                 return ([[t, d]],)
-            # иначе склеить всё как один тензор
+            # otherwise glue everything together as a single tensor
             vals = list(sd.values())
             return ([[vals[0], {}]],)
         data = torch.load(path, map_location="cpu", weights_only=False)
-        # формат Condition-Utils: list of [tensor, dict]
+        # Condition-Utils format: list of [tensor, dict]
         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (list, tuple)):
             return (data,)
-        # одиночный тензор — обернуть
+        # single tensor — wrap it
         if torch.is_tensor(data):
             return ([[data, {}]],)
-        raise ValueError(f"неизвестный формат файла: {path}")
+        raise ValueError(f"unknown file format: {path}")
 
 
 NODE_CLASS_MAPPINGS = {
